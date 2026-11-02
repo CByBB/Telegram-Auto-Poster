@@ -75,6 +75,8 @@ echo "Your message here" > config/message.txt
 The bot uses a `config/` directory in the project root for storing:
 - **Session files**: `config/{SESSION_NAME}.session` - Automatically created after first authentication
 - **Message file**: `config/message.txt` - Your message to post (create this file or use `MESSAGE` env var)
+- **Allowlist**: `config/allowlist.txt` - IDs of the groups/channels to post to, one per line (`#` starts a comment). **Only these are posted to**; if the file is missing or empty, the bot doesn't post at all
+- **Group list**: `config/groups.txt` - Written on every start with all your groups/channels and their IDs (`-1001234567890  # [Group] Title`). Copy the lines you want into `allowlist.txt`
 
 The `config/` directory is automatically created on first run.
 
@@ -124,7 +126,7 @@ After the first authentication, the session will be saved and you won't need to 
 ## How It Works
 
 1. **Startup**: The bot connects to Telegram and authenticates if needed
-2. **Group Fetching**: Retrieves all groups and channels you're a member of
+2. **Group Fetching**: Retrieves all groups and channels you're a member of, logs them with their IDs, saves them to `config/groups.txt`, and keeps only those listed in `config/allowlist.txt`
 3. **Posting**: For each group:
    - Deletes the previous message (if exists)
    - Posts the configured message

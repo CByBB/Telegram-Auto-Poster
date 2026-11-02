@@ -34,6 +34,8 @@ echo "Hello! This is an automated message." > config/message.txt
 
 **Note**: The `config/message.txt` file takes priority over the `MESSAGE` environment variable.
 
+Choose where to post with `config/allowlist.txt` (one group/channel ID per line). On the first run the bot writes all your groups/channels with their IDs to `config/groups.txt` and won't post anything until the allowlist has IDs - copy the lines you want from `groups.txt` into `allowlist.txt`, then restart.
+
 ## 4. Run the Bot
 
 ### Development Mode (with hot reload):
@@ -59,7 +61,7 @@ After authentication, the session is saved in the `config/` directory and you wo
 
 ## 6. How It Works
 
-- The bot fetches all groups you're a member of
+- The bot fetches all groups/channels you're a member of and keeps only those in `config/allowlist.txt`
 - For each group, it posts your message immediately
 - Between posts it waits a random time between `POST_INTERVAL_MIN_MS` and `POST_INTERVAL_MAX_MS`, and logs the next scheduled post time
 - It checks your account standing with @SpamBot at startup and after every 15 sent posts, pausing posting until the account is clear (see `SPAMBOT_*` in `.env.example`)

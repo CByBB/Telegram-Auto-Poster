@@ -1,0 +1,7 @@
+# Groups/channels to post to - one ID per line.
+# Anything after "#" is a comment. Only IDs listed here will be posted to.
+# On every start, all your groups/channels and their IDs are written to
+# config/groups.txt - copy the lines you want from there into this file.
+
+-1001234567890  # [Group] My Group
+-1009876543210  # [Channel] My Channel

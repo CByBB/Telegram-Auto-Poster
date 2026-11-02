@@ -4,7 +4,7 @@ import { StringSession } from 'telegram/sessions';
 import type { EntityLike } from 'telegram/define';
 import * as fs from 'fs';
 import * as path from 'path';
-import { Config, getConfigDirectory } from './config';
+import { ALLOWLIST_FILE, Config, GROUPS_LIST_FILE, getConfigDirectory } from './config';
 import { Logger } from './logger';
 
 const SPAMBOT_USERNAME = 'SpamBot';
@@ -139,10 +139,13 @@ export class TelegramAutoPoster {
 
       Logger.info('Fetching groups...');
       await this.fetchGroups();
-      Logger.success(`Found ${this.groups.length} groups`);
+      Logger.success(`${this.groups.length} allowlisted groups/channels to post to`);
 
       if (this.groups.length === 0) {
-        Logger.warn('No groups found. Make sure you are a member of at least one group.');
+        Logger.warn(
+          `Nothing to post to. Copy the IDs you want from config/${GROUPS_LIST_FILE} into config/${ALLOWLIST_FILE} (one per line) and restart.`
+        );
+        await this.stop();
         return;
       }
 
@@ -283,6 +286,13 @@ export class TelegramAutoPoster {
       const dialogs = await this.client.getDialogs();
       this.groups = [];
 
+      const allowlist = this.config.allowedGroupIds;
+      const listLines: string[] = [
+        '# All groups and channels you are a member of (rewritten on every start).',
+        `# Copy the lines you want to post to into config/${ALLOWLIST_FILE}`,
+        '',
+      ];
+
       for (const dialog of dialogs) {
         if (dialog.isGroup || dialog.isChannel) {
           const entity = dialog.entity;
@@ -300,13 +310,32 @@ export class TelegramAutoPoster {
 
             // Store dialog ID as string (Telegram IDs can be negative for groups)
             const groupId = dialogId.toString();
-            this.groups.push({
-              id: groupId,
-              title,
-              entity, // Store entity for API calls
-            });
-            Logger.info(`Found group: ${title} (ID: ${groupId})`);
+            const type = dialog.isGroup ? 'Group' : 'Channel';
+            const allowed = allowlist.has(groupId);
+            listLines.push(`${groupId}  # [${type}] ${title}`);
+            Logger.info(
+              `Found ${type.toLowerCase()}: ${title} (ID: ${groupId})${allowed ? ' [ALLOWED]' : ''}`
+            );
+
+            if (allowed) {
+              this.groups.push({
+                id: groupId,
+                title,
+                entity, // Store entity for API calls
+              });
+            }
           }
+        }
+      }
+
+      const groupsListFile = path.join(getConfigDirectory(), GROUPS_LIST_FILE);
+      fs.writeFileSync(groupsListFile, listLines.join('\n') + '\n', 'utf-8');
+      Logger.info(`Saved all group/channel IDs to config/${GROUPS_LIST_FILE}`);
+
+      const foundIds = new Set(this.groups.map(g => g.id));
+      for (const id of allowlist) {
+        if (!foundIds.has(id)) {
+          Logger.warn(`Allowlist ID ${id} not found among your groups/channels - skipped`);
         }
       }
     } catch (error) {

@@ -12,8 +12,12 @@ export interface Config {
   spamCheckEnabled: boolean;
   spamCheckEveryPosts: number;
   spamRecheckDelayMs: number;
+  allowedGroupIds: Set<string>;
   message: string;
 }
+
+export const ALLOWLIST_FILE = 'allowlist.txt';
+export const GROUPS_LIST_FILE = 'groups.txt';
 
 function parseIntEnv(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -70,6 +74,25 @@ function loadMessageFromFile(): string | null {
   return null;
 }
 
+/**
+ * Reads config/allowlist.txt: one group/channel ID per line.
+ * Anything after "#" is a comment, blank lines are ignored.
+ */
+function loadAllowlist(): Set<string> {
+  const ids = new Set<string>();
+  const allowlistFile = path.join(ensureConfigDirectory(), ALLOWLIST_FILE);
+  if (!fs.existsSync(allowlistFile)) {
+    return ids;
+  }
+  for (const line of fs.readFileSync(allowlistFile, 'utf-8').split(/\r?\n/)) {
+    const id = line.split('#')[0].trim();
+    if (id) {
+      ids.add(id);
+    }
+  }
+  return ids;
+}
+
 export function loadConfig(): Config {
   const apiId = process.env.API_ID;
   const apiHash = process.env.API_HASH;
@@ -109,6 +132,7 @@ export function loadConfig(): Config {
     spamCheckEnabled,
     spamCheckEveryPosts,
     spamRecheckDelayMs,
+    allowedGroupIds: loadAllowlist(),
     message,
   };
 }
