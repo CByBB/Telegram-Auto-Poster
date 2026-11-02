@@ -46,7 +46,8 @@ cp .env.example .env
 ```env
 API_ID=your_api_id
 API_HASH=your_api_hash
-POST_INTERVAL_MS=60000
+POST_INTERVAL_MIN_MS=60000
+POST_INTERVAL_MAX_MS=300000
 ```
 
 5. Create `config/message.txt` file with your message (or set `MESSAGE` in `.env`):
@@ -63,7 +64,10 @@ echo "Your message here" > config/message.txt
 - `API_ID`: Your Telegram API ID (from https://my.telegram.org/apps)
 - `API_HASH`: Your Telegram API Hash
 - `SESSION_NAME`: Name for the session file (default: "session", saved in `config/` directory)
-- `POST_INTERVAL_MS`: Interval between posts in milliseconds (default: 60000 = 1 minute)
+- `POST_INTERVAL_MIN_MS` / `POST_INTERVAL_MAX_MS`: Range for the wait between posts in milliseconds. A random value in this range is picked before every post (both default to the legacy `POST_INTERVAL_MS`, or 60000)
+- `SPAMBOT_CHECK_ENABLED`: Automatically check account standing with @SpamBot (default: `true`)
+- `SPAMBOT_CHECK_EVERY_POSTS`: Check @SpamBot after this many sent posts (default: 15). A check also runs at startup and whenever Telegram returns `PEER_FLOOD`
+- `SPAMBOT_RECHECK_DELAY_MS`: While posting is paused, delay before rechecking when @SpamBot gives no "limited until" time (default: 1800000 = 30m)
 - `MESSAGE`: The message to post in groups (optional - `config/message.txt` takes priority)
 
 ### File Structure
@@ -124,8 +128,9 @@ After the first authentication, the session will be saved and you won't need to 
 3. **Posting**: For each group:
    - Deletes the previous message (if exists)
    - Posts the configured message
-   - Schedules the next post based on `POST_INTERVAL_MS`
-4. **Logging**: All actions are logged to the console in real-time
+   - Picks a random wait between `POST_INTERVAL_MIN_MS` and `POST_INTERVAL_MAX_MS` and logs the next scheduled post time
+4. **Account check**: At startup and after every `SPAMBOT_CHECK_EVERY_POSTS` sent posts, sends `/start` to @SpamBot. If the reply isn't "no limits", posting pauses: it rechecks at the "limited until" time if SpamBot gives one, otherwise after `SPAMBOT_RECHECK_DELAY_MS`, and resumes posting once the account is clear
+5. **Logging**: All actions are logged to the console in real-time
 
 ## Stopping the Bot
 

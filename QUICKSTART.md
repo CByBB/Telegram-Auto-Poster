@@ -21,7 +21,8 @@ Create a `.env` file:
 API_ID=your_api_id_here
 API_HASH=your_api_hash_here
 SESSION_NAME=session
-POST_INTERVAL_MS=60000
+POST_INTERVAL_MIN_MS=60000
+POST_INTERVAL_MAX_MS=300000
 ```
 
 Create `config/message.txt` file with your message:
@@ -60,7 +61,8 @@ After authentication, the session is saved in the `config/` directory and you wo
 
 - The bot fetches all groups you're a member of
 - For each group, it posts your message immediately
-- Then it schedules periodic posts based on `POST_INTERVAL_MS`
+- Between posts it waits a random time between `POST_INTERVAL_MIN_MS` and `POST_INTERVAL_MAX_MS`, and logs the next scheduled post time
+- It checks your account standing with @SpamBot at startup and after every 15 sent posts, pausing posting until the account is clear (see `SPAMBOT_*` in `.env.example`)
 - Before each new post, it deletes the previous message
 - All actions are logged to the console in real-time
 

@@ -7,6 +7,65 @@ import * as path from 'path';
 import { Config, getConfigDirectory } from './config';
 import { Logger } from './logger';
 
+const SPAMBOT_USERNAME = 'SpamBot';
+// Checked first, since the "ok" reply itself contains the word "limits"
+const SPAMBOT_OK_PHRASES = ['no limits', 'free as a bird', 'good news'];
+const SPAMBOT_LIMITED_PHRASES = [
+  'limited',
+  'restricted',
+  'unfortunately',
+  "i'm afraid",
+  'annoying',
+];
+// e.g. "limited until 15 Nov 2026, 12:34 UTC" / "will be automatically released on 7 Dec 2026, 19:41 UTC"
+const SPAMBOT_UNTIL_REGEX =
+  /(?:until|released on|lifted on)\s+(\d{1,2}\s+[A-Za-z]+\s+\d{4},?\s+\d{1,2}:\d{2}(?:\s*(?:UTC|GMT))?)/i;
+// Extra wait after the "until" time before rechecking
+const SPAMBOT_UNTIL_BUFFER_MS = 60 * 1000;
+// setTimeout cannot handle delays above ~24.8 days
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+
+type SpamStatus = 'ok' | 'limited' | 'unknown';
+
+interface SpamCheckResult {
+  status: SpamStatus;
+  limitedUntil?: number;
+}
+
+function parseLimitedUntil(text: string): number | undefined {
+  const match = text.match(SPAMBOT_UNTIL_REGEX);
+  if (!match) {
+    return undefined;
+  }
+  let dateText = match[1].replace(',', '');
+  // SpamBot reports times in UTC
+  if (!/(UTC|GMT)$/i.test(dateText)) {
+    dateText += ' UTC';
+  }
+  const timestamp = Date.parse(dateText);
+  return isNaN(timestamp) ? undefined : timestamp;
+}
+
+function randomBetween(min: number, max: number): number {
+  return Math.floor(min + Math.random() * (max - min + 1));
+}
+
+function formatTime(timestamp: number): string {
+  return new Date(timestamp).toLocaleString();
+}
+
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.round(ms / 1000);
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  const parts: string[] = [];
+  if (h) parts.push(`${h}h`);
+  if (m) parts.push(`${m}m`);
+  if (s || parts.length === 0) parts.push(`${s}s`);
+  return parts.join(' ');
+}
+
 interface GroupInfo {
   id: string;
   title: string;
@@ -89,8 +148,13 @@ export class TelegramAutoPoster {
 
       this.isRunning = true;
       Logger.info(
-        `Starting sequential posting: will post to each group with ${this.config.postIntervalMs / 1000}s interval between posts`
+        `Starting sequential posting: random interval between posts of ${formatDuration(this.config.postIntervalMinMs)} - ${formatDuration(this.config.postIntervalMaxMs)}`
       );
+      if (this.config.spamCheckEnabled) {
+        Logger.info(
+          `@SpamBot account check enabled: at startup and every ${this.config.spamCheckEveryPosts} sent posts (posting pauses until account is clear)`
+        );
+      }
       this.startPosting();
       Logger.success('Auto posting started');
     } catch (error) {
@@ -258,26 +322,52 @@ export class TelegramAutoPoster {
 
   private async postSequentially(): Promise<void> {
     let currentIndex = 0;
-    let isFirstPost = true;
+    // Check account standing once at startup, then after a random number of sent posts
+    let spamCheckDue = this.config.spamCheckEnabled;
+    let postsSinceSpamCheck = 0;
 
     while (this.isRunning) {
       if (this.groups.length === 0) {
         break;
       }
 
+      if (spamCheckDue) {
+        await this.waitForGoodStanding();
+        if (!this.isRunning) {
+          break;
+        }
+        spamCheckDue = false;
+        postsSinceSpamCheck = 0;
+        Logger.info(`Next @SpamBot check after ${this.config.spamCheckEveryPosts} sent posts`);
+      }
+
       const group = this.groups[currentIndex];
       let postSuccess = false;
-      
+
       try {
         await this.postToGroup(group);
         postSuccess = true;
       } catch (error) {
         Logger.error(`Error posting to group "${group.title}"`, error);
         postSuccess = false;
+        // PEER_FLOOD means Telegram has started limiting the account - check right away
+        if (this.config.spamCheckEnabled && String(error).includes('PEER_FLOOD')) {
+          Logger.warn('Telegram returned PEER_FLOOD - checking account standing now');
+          spamCheckDue = true;
+          continue;
+        }
       }
 
-      // Mark first post as completed
-      isFirstPost = false;
+      if (postSuccess && this.config.spamCheckEnabled) {
+        postsSinceSpamCheck++;
+        if (postsSinceSpamCheck >= this.config.spamCheckEveryPosts) {
+          spamCheckDue = true;
+        } else {
+          Logger.info(
+            `Posts until next @SpamBot check: ${this.config.spamCheckEveryPosts - postsSinceSpamCheck}`
+          );
+        }
+      }
 
       // Move to next group (wrap around to first group after last)
       currentIndex = (currentIndex + 1) % this.groups.length;
@@ -285,21 +375,97 @@ export class TelegramAutoPoster {
       // Only wait for interval if post was successful
       // If post failed, try next group immediately without waiting
       if (postSuccess && this.isRunning) {
-        // Wait for the configured interval before posting to next group
-        // Add random variation (10-20 seconds) to make it less detectable as a bot
-        const randomVariation = Math.floor(Math.random() * 10000) + 10000; // 10-20 seconds in ms
-        const totalWaitTime = this.config.postIntervalMs + randomVariation;
-        const waitSeconds = (totalWaitTime / 1000).toFixed(1);
-        Logger.info(`Waiting ${waitSeconds}s before next post (${this.config.postIntervalMs / 1000}s base + ${(randomVariation / 1000).toFixed(1)}s random)`);
-        await this.sleep(totalWaitTime);
+        // Pick a random wait within the configured range for every post
+        const waitMs = randomBetween(this.config.postIntervalMinMs, this.config.postIntervalMaxMs);
+        const nextGroup = this.groups[currentIndex];
+        Logger.info(
+          `Next post scheduled at ${formatTime(Date.now() + waitMs)} (in ${formatDuration(waitMs)}) to "${nextGroup.title}"`
+        );
+        await this.sleep(waitMs);
       } else if (!postSuccess) {
         Logger.info('Post failed, trying next group immediately without waiting');
       }
     }
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  /**
+   * Checks @SpamBot and blocks until the account is in good standing.
+   * If SpamBot reports a "limited until" time, rechecks at that time;
+   * otherwise rechecks after a random delay from SPAMBOT_RECHECK_DELAY_MIN/MAX_MS.
+   */
+  private async waitForGoodStanding(): Promise<void> {
+    while (this.isRunning) {
+      const result = await this.checkSpamStatus();
+      if (result.status === 'ok') {
+        return;
+      }
+
+      let recheckAt: number;
+      if (result.limitedUntil && result.limitedUntil > Date.now()) {
+        recheckAt = result.limitedUntil + SPAMBOT_UNTIL_BUFFER_MS;
+        Logger.warn(
+          `@SpamBot says the account is limited until ${formatTime(result.limitedUntil)}`
+        );
+      } else {
+        recheckAt = Date.now() + this.config.spamRecheckDelayMs;
+      }
+
+      Logger.warn(
+        `Posting paused - next @SpamBot check at ${formatTime(recheckAt)} (in ${formatDuration(recheckAt - Date.now())})`
+      );
+      await this.sleep(recheckAt - Date.now());
+    }
+  }
+
+  /**
+   * Sends /start to @SpamBot and interprets its reply.
+   * Returns 'ok' if no limits, 'limited' if restricted (with the end time if SpamBot gives one),
+   * 'unknown' if there was no reply or it couldn't be parsed.
+   */
+  private async checkSpamStatus(): Promise<SpamCheckResult> {
+    Logger.info('Checking account standing with @SpamBot...');
+    try {
+      const sent = await this.client.sendMessage(SPAMBOT_USERNAME, { message: '/start' });
+
+      // Wait for SpamBot's reply (poll for up to ~20s)
+      let replyText: string | undefined;
+      for (let attempt = 0; attempt < 10 && !replyText; attempt++) {
+        await this.sleep(2000);
+        const messages = await this.client.getMessages(SPAMBOT_USERNAME, { limit: 5 });
+        const reply = messages.find(m => !m.out && m.id > sent.id && m.message);
+        replyText = reply?.message;
+      }
+
+      if (!replyText) {
+        Logger.warn('@SpamBot did not reply in time - account standing unknown');
+        return { status: 'unknown' };
+      }
+
+      const text = replyText.toLowerCase();
+      if (SPAMBOT_OK_PHRASES.some(p => text.includes(p))) {
+        Logger.success('@SpamBot: account is in good standing - no limits applied');
+        return { status: 'ok' };
+      }
+      if (SPAMBOT_LIMITED_PHRASES.some(p => text.includes(p))) {
+        Logger.warn(`@SpamBot: account is LIMITED\n${replyText}`);
+        return { status: 'limited', limitedUntil: parseLimitedUntil(replyText) };
+      }
+
+      Logger.warn(`@SpamBot: could not interpret reply\n${replyText}`);
+      return { status: 'unknown' };
+    } catch (error) {
+      Logger.error('Failed to check account standing with @SpamBot', error);
+      return { status: 'unknown' };
+    }
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    // Split long waits so they don't overflow setTimeout's max delay
+    while (ms > 0) {
+      const chunk = Math.min(ms, MAX_TIMEOUT_MS);
+      await new Promise(resolve => setTimeout(resolve, chunk));
+      ms -= chunk;
+    }
   }
 
   private async postToGroup(group: GroupInfo): Promise<void> {
