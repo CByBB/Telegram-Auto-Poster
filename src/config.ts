@@ -19,6 +19,14 @@ export interface Config {
 export const ALLOWLIST_FILE = 'allowlist.txt';
 export const GROUPS_LIST_FILE = 'groups.txt';
 
+/** A setup problem the user can fix in .env / config - shown without a stack trace. */
+export class ConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConfigError';
+  }
+}
+
 function parseIntEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === '') {
@@ -26,7 +34,7 @@ function parseIntEnv(name: string, fallback: number): number {
   }
   const value = parseInt(raw, 10);
   if (isNaN(value) || value < 0) {
-    throw new Error(`${name} must be a non-negative integer (got "${raw}")`);
+    throw new ConfigError(`${name} must be a non-negative integer (got "${raw}")`);
   }
   return value;
 }
@@ -48,7 +56,7 @@ function parseRange(
   const min = parseIntEnv(minName, minFallback);
   const max = parseIntEnv(maxName, Math.max(min, maxFallback));
   if (min > max) {
-    throw new Error(`${minName} (${min}) must be less than or equal to ${maxName} (${max})`);
+    throw new ConfigError(`${minName} (${min}) must be less than or equal to ${maxName} (${max})`);
   }
   return [min, max];
 }
@@ -109,7 +117,7 @@ export function loadConfig(): Config {
   // Check @SpamBot after this many sent posts
   const spamCheckEveryPosts = parseIntEnv('SPAMBOT_CHECK_EVERY_POSTS', 15);
   if (spamCheckEveryPosts < 1) {
-    throw new Error('SPAMBOT_CHECK_EVERY_POSTS must be at least 1');
+    throw new ConfigError('SPAMBOT_CHECK_EVERY_POSTS must be at least 1');
   }
   // While paused, recheck after this delay (when SpamBot gives no end time)
   const spamRecheckDelayMs = parseIntEnv('SPAMBOT_RECHECK_DELAY_MS', 30 * 60 * 1000);
@@ -118,15 +126,20 @@ export function loadConfig(): Config {
   const messageFromFile = loadMessageFromFile();
   const message = messageFromFile || process.env.MESSAGE || 'Default message';
 
-  if (!apiId || !apiHash) {
-    throw new Error(
-      'API_ID and API_HASH are required. Please set them in .env file or environment variables.'
-    );
+  const credentialsHint = 'Get them from https://my.telegram.org/apps and set them in .env';
+  if (!apiId?.trim() || !apiHash?.trim()) {
+    throw new ConfigError(`API_ID and API_HASH are required. ${credentialsHint}`);
+  }
+  if (!/^\d+$/.test(apiId.trim())) {
+    throw new ConfigError(`API_ID must be a number (got "${apiId}"). ${credentialsHint}`);
+  }
+  if (!/^[0-9a-f]{32}$/i.test(apiHash.trim())) {
+    throw new ConfigError(`API_HASH must be a 32-character hex string. ${credentialsHint}`);
   }
 
   return {
     apiId: parseInt(apiId, 10),
-    apiHash,
+    apiHash: apiHash.trim(),
     postIntervalMinMs,
     postIntervalMaxMs,
     spamCheckEnabled,

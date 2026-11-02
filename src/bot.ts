@@ -1,5 +1,5 @@
 import { TelegramClient } from 'telegram';
-import { Api } from 'telegram';
+import { Api, password as passwordHelpers } from 'telegram';
 import { StringSession } from 'telegram/sessions';
 import type { EntityLike } from 'telegram/define';
 import * as fs from 'fs';
@@ -44,6 +44,17 @@ function parseLimitedUntil(text: string): number | undefined {
   }
   const timestamp = Date.parse(dateText);
   return isNaN(timestamp) ? undefined : timestamp;
+}
+
+/** Prefixes an error's message with context so the top-level handler can log it once. */
+function withContext(context: string, error: unknown): Error {
+  if (error instanceof Error) {
+    if (!error.message.startsWith(context)) {
+      error.message = `${context}: ${error.message}`;
+    }
+    return error;
+  }
+  return new Error(`${context}: ${String(error)}`);
 }
 
 function randomBetween(min: number, max: number): number {
@@ -121,49 +132,44 @@ export class TelegramAutoPoster {
   }
 
   async start(): Promise<void> {
-    try {
-      Logger.info('Starting Telegram Auto Poster...');
-      Logger.info('Connecting to Telegram...');
+    Logger.info('Starting Telegram Auto Poster...');
+    Logger.info('Connecting to Telegram...');
 
-      await this.client.connect();
-      Logger.success('Connected to Telegram');
+    await this.client.connect();
+    Logger.success('Connected to Telegram');
 
-      if (!(await this.client.checkAuthorization())) {
-        Logger.info('Not authorized. Starting authentication...');
-        await this.authenticate();
-      } else {
-        Logger.success('Already authorized');
-        // Save session in case it was updated
-        this.saveSession();
-      }
-
-      Logger.info('Fetching groups...');
-      await this.fetchGroups();
-      Logger.success(`${this.groups.length} allowlisted groups/channels to post to`);
-
-      if (this.groups.length === 0) {
-        Logger.warn(
-          `Nothing to post to. Copy the IDs you want from config/${GROUPS_LIST_FILE} into config/${ALLOWLIST_FILE} (one per line) and restart.`
-        );
-        await this.stop();
-        return;
-      }
-
-      this.isRunning = true;
-      Logger.info(
-        `Starting sequential posting: random interval between posts of ${formatDuration(this.config.postIntervalMinMs)} - ${formatDuration(this.config.postIntervalMaxMs)}`
-      );
-      if (this.config.spamCheckEnabled) {
-        Logger.info(
-          `@SpamBot account check enabled: at startup and every ${this.config.spamCheckEveryPosts} sent posts (posting pauses until account is clear)`
-        );
-      }
-      this.startPosting();
-      Logger.success('Auto posting started');
-    } catch (error) {
-      Logger.error('Failed to start bot', error);
-      throw error;
+    if (!(await this.client.checkAuthorization())) {
+      Logger.info('Not authorized. Starting authentication...');
+      await this.authenticate();
+    } else {
+      Logger.success('Already authorized');
+      // Save session in case it was updated
+      this.saveSession();
     }
+
+    Logger.info('Fetching groups...');
+    await this.fetchGroups();
+    Logger.success(`${this.groups.length} allowlisted groups/channels to post to`);
+
+    if (this.groups.length === 0) {
+      Logger.warn(
+        `Nothing to post to. Copy the IDs you want from config/${GROUPS_LIST_FILE} into config/${ALLOWLIST_FILE} (one per line) and restart.`
+      );
+      await this.stop();
+      return;
+    }
+
+    this.isRunning = true;
+    Logger.info(
+      `Starting sequential posting: random interval between posts of ${formatDuration(this.config.postIntervalMinMs)} - ${formatDuration(this.config.postIntervalMaxMs)}`
+    );
+    if (this.config.spamCheckEnabled) {
+      Logger.info(
+        `@SpamBot account check enabled: at startup and every ${this.config.spamCheckEveryPosts} sent posts (posting pauses until account is clear)`
+      );
+    }
+    this.startPosting();
+    Logger.success('Auto posting started');
   }
 
   private async authenticate(): Promise<void> {
@@ -229,8 +235,7 @@ export class TelegramAutoPoster {
           const passwordResult = await this.client.invoke(new Api.account.GetPassword());
 
           // Compute password hash using SRP
-          const Password = await import('telegram/Password');
-          const passwordCheck = await Password.computeCheck(passwordResult, password);
+          const passwordCheck = await passwordHelpers.computeCheck(passwordResult, password);
 
           // Check password
           const checkPasswordResult = await this.client.invoke(
@@ -262,8 +267,7 @@ export class TelegramAutoPoster {
         }
       }
     } catch (error) {
-      Logger.error('Authentication failed', error);
-      throw error;
+      throw withContext('Authentication failed', error);
     }
   }
 
@@ -339,8 +343,7 @@ export class TelegramAutoPoster {
         }
       }
     } catch (error) {
-      Logger.error('Failed to fetch groups', error);
-      throw error;
+      throw withContext('Failed to fetch groups', error);
     }
   }
 
